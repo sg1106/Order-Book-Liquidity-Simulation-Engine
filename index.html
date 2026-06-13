@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Order Book Liquidity Engine</title>
+
+<!-- Fonts -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;600&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+<!-- Plotly -->
+<script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+
+<!-- App styles -->
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+<div id="loading">
+  <div class="spinner"></div>
+  <span>Initialising order book engine…</span>
+</div>
+
+<div id="app">
+
+  <!-- ── Sidebar ─────────────────────────────────────────────────────── -->
+  <div id="sidebar">
+    <div class="sb-title">⚙ Controls</div>
+
+    <div class="sb-section">Market Scenario</div>
+    <div class="sb-row">
+      <select id="sb-scenario"></select>
+    </div>
+
+    <hr>
+    <div class="sb-section">Manual Overrides</div>
+
+    <div class="sb-row">
+      <div class="sb-label">Volatility <span id="lbl-vol">0.030</span></div>
+      <input type="range" id="sb-vol" min="0.001" max="0.15" step="0.001" value="0.03"
+             oninput="document.getElementById('lbl-vol').textContent=parseFloat(this.value).toFixed(3)">
+    </div>
+    <div class="sb-row">
+      <div class="sb-label">Order Arrival Rate <span id="lbl-rate">6</span></div>
+      <input type="range" id="sb-rate" min="1" max="25" step="1" value="6"
+             oninput="document.getElementById('lbl-rate').textContent=this.value">
+    </div>
+    <div class="sb-row">
+      <div class="sb-label">Avg Market Order Size</div>
+      <input type="number" id="sb-size" min="1" max="5000" value="100">
+    </div>
+    <div class="sb-row">
+      <div class="sb-label">Auto-step Interval (ms) <span id="lbl-speed">300</span></div>
+      <input type="range" id="sb-speed" min="50" max="2000" step="10" value="300"
+             oninput="document.getElementById('lbl-speed').textContent=this.value">
+    </div>
+
+    <hr>
+    <div class="sb-section">📌 Inject Order</div>
+    <div class="sb-row">
+      <div class="sb-label">Order Type</div>
+      <select id="inj-type" onchange="togglePriceField()">
+        <option value="market">Market</option>
+        <option value="limit">Limit</option>
+        <option value="cancel">Cancel</option>
+      </select>
+    </div>
+    <div class="sb-row">
+      <div class="sb-label">Side</div>
+      <select id="inj-side">
+        <option value="buy">Buy</option>
+        <option value="sell">Sell</option>
+      </select>
+    </div>
+    <div class="sb-row" id="price-row" style="display:none">
+      <div class="sb-label">Price</div>
+      <input type="number" id="inj-price" step="0.1" value="100.0">
+    </div>
+    <div class="sb-row">
+      <div class="sb-label">Size</div>
+      <input type="number" id="inj-size" min="1" value="500">
+    </div>
+    <button class="sb-btn" onclick="injectOrder()">📤 Submit Order</button>
+
+    <hr>
+    <button class="sb-btn" onclick="exportCSV()">⬇ Export Trades CSV</button>
+    <button class="sb-btn danger" onclick="resetSim()">🔄 Reset Simulation</button>
+  </div>
+
+  <!-- ── Main ────────────────────────────────────────────────────────── -->
+  <div id="main">
+
+    <!-- Header -->
+    <div id="header">
+      <div class="h-title">📈 Order Book Liquidity Engine</div>
+      <div class="h-banner" id="h-banner">
+        <span><span class="dot dot-normal" id="regime-dot"></span><b id="regime-label">NORMAL</b></span>
+        <span class="h-stat">STEP <b id="h-step">0</b></span>
+        <span class="h-stat">TRADES <b id="h-trades">0</b></span>
+        <span class="h-stat">VOL <b id="h-vol">0</b></span>
+        <span class="h-stat">SPREAD <b id="h-spread">—</b></span>
+        <span class="h-stat">VWAP <b id="h-vwap">—</b></span>
+      </div>
+      <div class="h-cards">
+        <div class="h-card">
+          <div class="h-card-label">Mid Price</div>
+          <div class="h-card-value" id="h-mid">—</div>
+        </div>
+        <div class="h-card">
+          <div class="h-card-label">MM PnL</div>
+          <div class="h-card-value" id="h-pnl">—</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Controls -->
+    <div id="controls">
+      <button class="ctrl-btn" onclick="doStep(1)">▶ ×1</button>
+      <button class="ctrl-btn" onclick="doStep(10)">⏭ ×10</button>
+      <button class="ctrl-btn" onclick="doStep(50)">⏩ ×50</button>
+      <button class="ctrl-btn" onclick="doStep(200)">🚀 ×200</button>
+      <button class="ctrl-btn" id="btn-auto" onclick="toggleAuto()">▶▶ Auto</button>
+      <div class="mm-inv-badge">
+        <div class="label">MM INV</div>
+        <div class="val" id="mm-inv-val">0</div>
+      </div>
+    </div>
+
+    <!-- Tab bar -->
+    <div id="tabs-bar">
+      <button class="tab-btn active" data-tab="3d"        onclick="switchTab('3d')">🌐 3D Surface</button>
+      <button class="tab-btn"        data-tab="depth"     onclick="switchTab('depth')">📊 Market Depth</button>
+      <button class="tab-btn"        data-tab="heatmap"   onclick="switchTab('heatmap')">🔥 Heatmap</button>
+      <button class="tab-btn"        data-tab="analytics" onclick="switchTab('analytics')">📈 Analytics</button>
+      <button class="tab-btn"        data-tab="mm"        onclick="switchTab('mm')">🤖 Market Maker</button>
+      <button class="tab-btn"        data-tab="stats"     onclick="switchTab('stats')">🔬 Statistics</button>
+      <button class="tab-btn"        data-tab="l2"        onclick="switchTab('l2')">📋 L2 Book</button>
+    </div>
+
+    <!-- Tab body -->
+    <div id="tab-body">
+
+      <!-- 1 · 3D Surface -->
+      <div class="tab-panel active" id="panel-3d">
+        <div class="row">
+          <div class="col-3">
+            <div class="chart-box"><div id="chart-3d" style="height:520px"></div></div>
+          </div>
+          <div class="col-1">
+            <div class="metrics-panel" id="mp-3d"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 2 · Market Depth -->
+      <div class="tab-panel" id="panel-depth">
+        <div class="row">
+          <div class="col-3">
+            <div class="chart-box"><div id="chart-depth"    style="height:380px"></div></div>
+            <div class="chart-box"><div id="chart-slippage" style="height:360px"></div></div>
+          </div>
+          <div class="col-1">
+            <div class="metrics-panel" id="mp-depth"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 3 · Heatmap -->
+      <div class="tab-panel" id="panel-heatmap">
+        <div class="row">
+          <div class="col-3">
+            <div class="chart-box"><div id="chart-heatmap" style="height:400px"></div></div>
+            <div class="chart-box"><div id="chart-ofi"     style="height:220px"></div></div>
+          </div>
+          <div class="col-2">
+            <div class="chart-box"><div id="chart-vprofile" style="height:460px"></div></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 4 · Analytics -->
+      <div class="tab-panel" id="panel-analytics">
+        <div class="chart-box"><div id="chart-regime-price" style="height:360px"></div></div>
+        <div class="row">
+          <div class="col-3">
+            <div class="chart-box"><div id="chart-tape"      style="height:350px"></div></div>
+          </div>
+          <div class="col-2">
+            <div class="chart-box"><div id="chart-cum-delta" style="height:240px"></div></div>
+          </div>
+        </div>
+        <div class="trades-title">🔄 Recent Executions</div>
+        <table class="trade-table">
+          <thead><tr><th>Time</th><th>Side</th><th>Price</th><th>Size</th></tr></thead>
+          <tbody id="trades-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- 5 · Market Maker -->
+      <div class="tab-panel" id="panel-mm">
+        <div class="mm-cards" id="mm-summary-cards"></div>
+        <div class="chart-box"><div id="chart-mm" style="height:420px"></div></div>
+        <div class="trades-title" style="margin-top:6px">Regime Distribution</div>
+        <div class="regime-cards" id="regime-cards"></div>
+      </div>
+
+      <!-- 6 · Statistics -->
+      <div class="tab-panel" id="panel-stats">
+        <div class="row">
+          <div class="col-2">
+            <div class="chart-box"><div id="chart-returns"   style="height:340px"></div></div>
+          </div>
+          <div class="col-2">
+            <div class="chart-box"><div id="chart-price-hist" style="height:400px"></div></div>
+          </div>
+        </div>
+        <div class="trades-title">Rolling Statistics</div>
+        <table class="stats-table">
+          <thead>
+            <tr>
+              <th>Window</th><th>Mean (bps)</th><th>Std (bps)</th>
+              <th>Ann. Vol %</th><th>Autocorr</th><th>Min (bps)</th><th>Max (bps)</th>
+            </tr>
+          </thead>
+          <tbody id="stats-tbody"></tbody>
+        </table>
+      </div>
+
+      <!-- 7 · L2 Book -->
+      <div class="tab-panel" id="panel-l2">
+        <div class="l2-wrap">
+          <div class="l2-side">
+            <div class="l2-title" style="color:var(--bid)">📗 Bids</div>
+            <table class="l2-table">
+              <thead><tr><th>Price</th><th>Volume</th><th>Depth</th></tr></thead>
+              <tbody id="l2-bids-body"></tbody>
+            </table>
+          </div>
+          <div class="l2-side">
+            <div class="l2-title" style="color:var(--ask)">📕 Asks</div>
+            <table class="l2-table">
+              <thead><tr><th>Price</th><th>Volume</th><th>Depth</th></tr></thead>
+              <tbody id="l2-asks-body"></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="l2-mid" id="l2-mid-bar"></div>
+      </div>
+
+    </div><!-- /tab-body -->
+  </div><!-- /main -->
+</div><!-- /app -->
+
+<!-- App logic -->
+<script src="script.js"></script>
+</body>
+</html>
